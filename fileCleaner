@@ -1,0 +1,6 @@
+rm -rf ./historical_trade_log.csv
+rm -rf ./trade_log.csv
+rm -rf ./nadaraya_watson_data.csv
+rm -rf ./nadaraya_watson_trading_debug.log
+rm -rf ./performance.csv
+rm -rf ./performance_log.csv
