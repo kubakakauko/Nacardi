@@ -19,9 +19,10 @@ from scipy.ndimage import gaussian_filter1d
 # ----------------------------- #
 
 # Binance API credentials
-API_KEY = "YOUR_API_KEY"  # Replace with your actual API key
-API_SECRET = "YOUR_API_SECRET"  # Replace with your actual API secret
+# Replace with your actual API and secret, this can later be adjusted for demo trading
 
+API_KEY = "YOUR_API_KEY"
+API_SECRET = "YOUR_API_SECRET"
 # Trading parameters
 SYMBOL = "BTCUSDT"  # Trading pair
 INTERVAL = "1m"  # Candle interval (e.g., '1m', '5m', '15m', '1h')
@@ -31,18 +32,24 @@ START_TIME = "1 day ago UTC"  # Start time for historical data
 NADARAYA_H = 8  # Smoothing parameter (sigma)
 NADARAYA_MULT = 3  # Multiplier for MAE
 
+# Other signal parameters
+
+EMA_PERIOD = 20
+
+# Calculate ATR and add to data_df
+ATR_PERIOD = 14
+
+# Calculate RSI and add to data_df
+RSI_PERIOD = 14
+
 # Log files
 DATA_LOG_FILE = "nadaraya_watson_data.csv"
 TRADE_LOG_FILE = "trade_log.csv"
 PERFORMANCE_LOG_FILE = "performance_log.csv"
-HISTORICAL_TRADE_LOG_FILE = "historical_trade_log.csv"
 DEBUG_LOG_FILE = "nadaraya_watson_trading_debug.log"
 
 # Visualization update interval in minutes
 VISUALIZATION_UPDATE_INTERVAL = 10  # Minutes
-
-# Indicator selection
-USE_TEMA = True  # Set to True to use Zero-lag TEMA, False to use EMA
 
 # ----------------------------- #
 #          Logging Setup        #
@@ -109,26 +116,6 @@ data_df = pd.DataFrame()
 # ----------------------------- #
 
 
-def check_and_create_csv(file_path: str, columns: list):
-    """
-    Check if the CSV file exists and has the correct columns.
-    If not, create the file with the specified columns.
-    """
-    if not os.path.exists(file_path):
-        df = pd.DataFrame(columns=columns)
-        df.to_csv(file_path, index=False)
-        logging.info(f"Created new CSV file: {file_path}")
-    else:
-        df = pd.read_csv(file_path)
-        existing_columns = df.columns.tolist()
-        missing_columns = [col for col in columns if col not in existing_columns]
-        if missing_columns:
-            for col in missing_columns:
-                df[col] = pd.NA
-            df.to_csv(file_path, index=False)
-            logging.info(f"Updated CSV file with missing columns: {file_path}")
-
-
 def append_data_log(
     timestamp,
     open_,
@@ -141,9 +128,6 @@ def append_data_log(
     lower_band,
     buy_signal,
     sell_signal,
-    ema=None,
-    tema=None,
-    rsi=None,
 ):
     """
     Append a new row to the data log CSV file.
@@ -163,9 +147,6 @@ def append_data_log(
                     "Lower_Band": lower_band,
                     "Buy_Signal": buy_signal,
                     "Sell_Signal": sell_signal,
-                    "EMA": ema,
-                    "TEMA": tema,
-                    "RSI": rsi,
                 }
             ]
         )
@@ -211,33 +192,6 @@ def log_trade(action, price, pnl, position=None, trade_id=None):
         )
     except Exception as e:
         logging.error(f"Error logging trade: {e}")
-
-
-def log_historical_trade(signal: str, price: float, timestamp):
-    """
-    Log historical Buy/Sell signals to a separate CSV file.
-    """
-    try:
-        df = pd.DataFrame(
-            [
-                {
-                    "Timestamp": timestamp,
-                    "Signal": signal,
-                    "Price": price,
-                }
-            ]
-        )
-        df.to_csv(
-            HISTORICAL_TRADE_LOG_FILE,
-            mode="a",
-            header=not os.path.exists(HISTORICAL_TRADE_LOG_FILE),
-            index=False,
-        )
-        logging.debug(
-            f"Logged historical trade: Signal={signal}, Price={price}, Timestamp={timestamp}."
-        )
-    except Exception as e:
-        logging.error(f"Error logging historical trade: {e}")
 
 
 def calculate_max_drawdown(cumulative_pnl: list) -> float:
@@ -401,17 +355,6 @@ def calculate_ema(prices: pd.Series, period: int) -> pd.Series:
     return prices.ewm(span=period, adjust=False).mean()
 
 
-def calculate_tema(prices: pd.Series, period: int) -> pd.Series:
-    """
-    Calculate the Triple Exponential Moving Average (TEMA).
-    """
-    ema1 = prices.ewm(span=period, adjust=False).mean()
-    ema2 = ema1.ewm(span=period, adjust=False).mean()
-    ema3 = ema2.ewm(span=period, adjust=False).mean()
-    tema = 3 * (ema1 - ema2) + ema3
-    return tema
-
-
 def calculate_atr(data: pd.DataFrame, period: int) -> pd.Series:
     """
     Calculate the Average True Range (ATR).
@@ -446,7 +389,7 @@ def generate_signals(
     y: np.ndarray, data: np.ndarray, mae: float, data_df: pd.DataFrame
 ) -> pd.DataFrame:
     """
-    Generate Buy/Sell signals based on price crossing the upper and lower bands and EMA/TEMA confirmation.
+    Generate Buy/Sell signals based on price crossing the upper and lower bands and EMA confirmation.
     """
     logging.debug("Generating Buy/Sell signals and calculating bands.")
 
@@ -462,26 +405,23 @@ def generate_signals(
     df_nw["Upper_Band_prev"] = df_nw["Upper_Band"].shift(1)
     df_nw["Lower_Band_prev"] = df_nw["Lower_Band"].shift(1)
 
-    # Include EMA/TEMA in the DataFrame
-    if USE_TEMA and "TEMA" in data_df.columns:
-        df_nw["Trend_Indicator"] = data_df["TEMA"].values
-    else:
-        df_nw["Trend_Indicator"] = data_df["EMA"].values
+    # Include EMA in the DataFrame
+    df_nw["EMA"] = data_df["EMA"].values
 
-    # Generate Buy Signal when price crosses below Lower Band from above and above Trend Indicator
+    # Generate Buy Signal when price crosses below Lower Band from above and above EMA
     df_nw["Buy_Signal"] = np.where(
         (df_nw["data_prev"] > df_nw["Lower_Band_prev"])
         & (df_nw["data"] <= df_nw["Lower_Band"])
-        & (df_nw["data"] > df_nw["Trend_Indicator"]),  # Price above Trend Indicator
+        & (df_nw["data"] > df_nw["EMA"]),  # Price above EMA
         df_nw["data"],
         np.nan,
     )
 
-    # Generate Sell Signal when price crosses above Upper Band from below and below Trend Indicator
+    # Generate Sell Signal when price crosses above Upper Band from below and below EMA
     df_nw["Sell_Signal"] = np.where(
         (df_nw["data_prev"] < df_nw["Upper_Band_prev"])
         & (df_nw["data"] >= df_nw["Upper_Band"])
-        & (df_nw["data"] < df_nw["Trend_Indicator"]),  # Price below Trend Indicator
+        & (df_nw["data"] < df_nw["EMA"]),  # Price below EMA
         df_nw["data"],
         np.nan,
     )
@@ -492,19 +432,6 @@ def generate_signals(
     logging.info(
         f"Total Buy Signals: {num_buy_signals}, Total Sell Signals: {num_sell_signals}."
     )
-
-    # Log historical trades
-    latest_index = df_nw.index[-1]
-    if not np.isnan(df_nw["Buy_Signal"].iloc[-1]):
-        signal = "BUY"
-        price = df_nw["Buy_Signal"].iloc[-1]
-        timestamp = data_df.index[latest_index]
-        log_historical_trade(signal, price, timestamp)
-    elif not np.isnan(df_nw["Sell_Signal"].iloc[-1]):
-        signal = "SELL"
-        price = df_nw["Sell_Signal"].iloc[-1]
-        timestamp = data_df.index[latest_index]
-        log_historical_trade(signal, price, timestamp)
 
     return df_nw[
         [
@@ -560,7 +487,7 @@ def execute_trade(
     if signal == "BUY":
         if POSITION_SIDE == "LONG":
             # Only DCA if RSI is within favorable range
-            if 25 < CURRENT_RSI < 65:
+            if 30 < CURRENT_RSI < 60:
                 # Adjust POSITION_SIZE
                 previous_size = POSITION_SIZE
                 POSITION_SIZE += DCA_size
@@ -747,47 +674,6 @@ def main():
         data_df
 
     try:
-        # Check and create required CSV files with correct columns
-        check_and_create_csv(
-            DATA_LOG_FILE,
-            [
-                "Timestamp",
-                "Open",
-                "High",
-                "Low",
-                "Close",
-                "Volume",
-                "y",
-                "Upper_Band",
-                "Lower_Band",
-                "Buy_Signal",
-                "Sell_Signal",
-                "EMA",
-                "TEMA",
-                "RSI",
-            ],
-        )
-        check_and_create_csv(
-            TRADE_LOG_FILE,
-            ["Timestamp", "Trade_ID", "Action", "Price", "PnL", "Position"],
-        )
-        check_and_create_csv(
-            PERFORMANCE_LOG_FILE,
-            [
-                "Timestamp",
-                "Total Trades",
-                "Win Trades",
-                "Win Ratio",
-                "Total PnL",
-                "Max Drawdown",
-                "Sharpe Ratio",
-            ],
-        )
-        check_and_create_csv(
-            HISTORICAL_TRADE_LOG_FILE,
-            ["Timestamp", "Signal", "Price"],
-        )
-
         # Fetch initial data
         data_df = live_data()
         if data_df.empty:
@@ -797,12 +683,9 @@ def main():
         close_prices = data_df["Close"].values
         data_index = data_df.index
 
-        # Calculate EMA/TEMA and add to data_df
-        indicator_period = 20
-        if USE_TEMA:
-            data_df["TEMA"] = calculate_tema(data_df["Close"], indicator_period)
-        else:
-            data_df["EMA"] = calculate_ema(data_df["Close"], indicator_period)
+        # Calculate EMA and add to data_df
+        ema_period = 20
+        data_df["EMA"] = calculate_ema(data_df["Close"], ema_period)
 
         # Calculate ATR and add to data_df
         atr_period = 14
@@ -827,9 +710,6 @@ def main():
             low = data_df["Low"].iloc[idx]
             close = data_df["Close"].iloc[idx]
             volume = data_df["Volume"].iloc[idx]
-            ema = data_df["EMA"].iloc[idx] if not USE_TEMA else np.nan
-            tema = data_df["TEMA"].iloc[idx] if USE_TEMA else np.nan
-            rsi = data_df["RSI"].iloc[idx]
             append_data_log(
                 timestamp,
                 open_,
@@ -842,9 +722,6 @@ def main():
                 row["Lower_Band"],
                 row["Buy_Signal"],
                 row["Sell_Signal"],
-                ema=ema,
-                tema=tema,
-                rsi=rsi,
             )
             logging.debug(f"Logged initial data point at {timestamp}.")
 
@@ -898,11 +775,8 @@ def main():
                 last_time = candle_time
                 logging.debug(f"Updated last_time to {last_time}.")
 
-                # Calculate EMA/TEMA and add to data_df
-                if USE_TEMA:
-                    data_df["TEMA"] = calculate_tema(data_df["Close"], indicator_period)
-                else:
-                    data_df["EMA"] = calculate_ema(data_df["Close"], indicator_period)
+                # Calculate EMA and add to data_df
+                data_df["EMA"] = calculate_ema(data_df["Close"], ema_period)
 
                 # Calculate ATR and add to data_df
                 data_df["ATR"] = calculate_atr(data_df, atr_period)
@@ -922,9 +796,6 @@ def main():
 
                 # Append the latest data point to the data log
                 latest_row = nw_df.iloc[-1]
-                ema = data_df["EMA"].iloc[-1] if not USE_TEMA else np.nan
-                tema = data_df["TEMA"].iloc[-1] if USE_TEMA else np.nan
-                rsi = data_df["RSI"].iloc[-1]
                 append_data_log(
                     candle_time,
                     new_data["Open"],
@@ -937,9 +808,6 @@ def main():
                     latest_row["Lower_Band"],
                     latest_row["Buy_Signal"],
                     latest_row["Sell_Signal"],
-                    ema=ema,
-                    tema=tema,
-                    rsi=rsi,
                 )
                 logging.debug(f"Appended new data point at {candle_time}.")
 

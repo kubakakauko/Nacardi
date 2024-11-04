@@ -1,0 +1,9 @@
+historical_trade_log.csv
+trade_log.csv
+nadaraya_watson_data.csv
+nadaraya_watson_trading_debug.log
+performance.csv
+performance_log.csv
+./nadaraya_watson_data.csv
+nadaraya_watson_trading_debug.log
+performance_log.csv
